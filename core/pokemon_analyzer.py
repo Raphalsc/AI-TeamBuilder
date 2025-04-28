@@ -1,14 +1,14 @@
 # === Imports ===
+import os
+import re
+import pprint
+import subprocess
 from core.metagame_analyzer import (
     load_metagame_data, get_top_threats, detect_common_cores, get_metagame_entry
 )
 from data.pokedex import (
     get_pokemon_data, get_roles, get_base_stats, get_all_sets, get_types
 )
-import subprocess
-import pprint
-import os
-import re
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT_PATH = os.path.join(BASE_DIR, "tools", "callDamageFromJSON.mjs")
@@ -28,7 +28,7 @@ def analyze_pokemon(name: str, top_n: int = 10) -> dict:
         "roles": get_roles(name),
         "sets": get_all_sets(name),
         "usage": round(meta_data.get("raw_count", 0) / 1000) if meta_data else 0,
-        "viability_ceiling": meta_data.get("viability_ceiling", None) if meta_data else None,
+        "viability_ceiling": meta_data.get("viability_ceiling") if meta_data else None,
         "meta": {}
     }
 
@@ -45,7 +45,6 @@ def analyze_pokemon(name: str, top_n: int = 10) -> dict:
     return analysis
 
 def normalize_name(name: str) -> str:
-    """Normalise un nom pour matcher le format des fichiers JSON."""
     return name.lower().replace("-", "").replace(" ", "")
 
 def call_damage_script(poke1: str, poke2: str) -> str:
@@ -60,200 +59,52 @@ def call_damage_script(poke1: str, poke2: str) -> str:
     except Exception as e:
         return f"⛔ Erreur : {str(e)}"
 
-import re
-
-def evaluate_duel(log_text: str) -> str:
-    if not log_text or "❌" in log_text or "Erreur" in log_text:
-        return "unknown"
-
-    def parse_stats_and_moves(text):
-        move_data = []
-        move_blocks = re.findall(r"⚔️ (.*?): ([\d\.]+)%(?: - ([\d\.]+)%)?", text)
-        for move_name, dmg1, dmg2 in move_blocks:
-            min_dmg = float(dmg1)
-            max_dmg = float(dmg2) if dmg2 else float(dmg1)
-            move_data.append((move_name.strip().lower(), min_dmg, max_dmg))
-
-        speed = "spe" in text.lower() or "speed" in text.lower()
-        item = re.search(r"\((.*?)\)", text)
-        item = item.group(1).lower() if item else ""
-
-        return {
-            "speed": speed,
-            "item": item,
-            "moves": move_data,
-            "raw": text.lower()
-        }
-
-    blocks = re.split(r"🧪 strategy: ", log_text)
-    if len(blocks) < 2:
-        return "unknown"
-
-    strat_a = parse_stats_and_moves(blocks[1])
-    strat_b = parse_stats_and_moves(blocks[2]) if len(blocks) > 2 else {"moves": []}
-
-    def can_ohko(attacker):
-        for name, min_dmg, max_dmg in attacker["moves"]:
-            if max_dmg >= 100 and name not in ("tailwind", "protect", "roost", "swords dance", "toxic", "substitute"):
-                return True
-        return False
-
-    def has_setup_win(attacker):
-        has_boost = any("swords dance" in name or "nasty plot" in name for name, _, _ in attacker["moves"])
-        strong_hit = any(max_dmg >= 100 for _, _, max_dmg in attacker["moves"])
-        return has_boost and strong_hit
-
-    def has_stall_win(attacker, defender):
-        has_toxic = any("toxic" in name for name, _, _ in attacker["moves"])
-        has_recovery = "roost" in attacker["raw"] or "recover" in attacker["raw"]
-        low_taken = all(max_dmg < 50 for _, _, max_dmg in defender["moves"])
-        return has_toxic and has_recovery and low_taken
-
-    a_faster = strat_a["speed"] or ("scarf" in strat_a["item"] and not strat_b["speed"])
-    b_faster = strat_b["speed"] or ("scarf" in strat_b["item"] and not strat_a["speed"])
-
-    if a_faster and can_ohko(strat_a):
-        return "win"
-    if b_faster and can_ohko(strat_b):
-        return "loss"
-    
-    # NEW: if attacker can OHKO but no clear speed info
-    if can_ohko(strat_a) and not can_ohko(strat_b):
-        return "win"
-    if can_ohko(strat_b) and not can_ohko(strat_a):
-        return "loss"
-
-    if has_setup_win(strat_a):
-        return "softwin"
-    if has_stall_win(strat_a, strat_b):
-        return "softwin"
-    if all(max_dmg < 30 for _, _, max_dmg in strat_a["moves"]) and all(max_dmg < 30 for _, _, max_dmg in strat_b["moves"]):
-        return "draw"
-
-    return "draw"
+def summarize_duel(log_text: str) -> list[str]:
+    blocks = re.findall(r"🧪 strategy: (.*?) vs strategy: (.*?)\n+🔬[^\n]*\n+((?:⚔️ .*?\n)+)", log_text, re.DOTALL)
+    summaries = []
+    for set1, set2, moves in blocks:
+        summaries.append(f"📊 {set1.strip()} vs {set2.strip()}")
+        for move_line in moves.strip().split("\n"):
+            if match := re.match(r"⚔️ (.*?): ([\d\.]+)% ?-? ?([\d\.]*)", move_line):
+                move, min_dmg, max_dmg = match.groups()
+                max_dmg = float(max_dmg) if max_dmg else float(min_dmg)
+                summaries.append(f"🔹 {move.strip()} → max {max_dmg}%")
+        summaries.append("")
+    return summaries
 
 def simulate_matchups(name: str, top_n: int = 10) -> dict:
     top_threats = [t for t, _ in get_top_threats(metagame, top_n=top_n)]
     results = {}
-    win_details = []
-
     os.makedirs("data/results", exist_ok=True)
-    result_path = f"data/results/{name.lower().replace(' ', '_')}_matchups.txt"
+    summary_log = open(f"data/results/{normalize_name(name)}_matchups_summary.txt", "w", encoding="utf-8")
 
-    with open(result_path, "w", encoding="utf-8") as log_file:
-        for threat in top_threats:
-            if normalize_name(threat) == normalize_name(name):
-                continue
+    print("\n⚔️ Matchups Résumé:")
 
-            poke_a = normalize_name(name)
-            poke_b = normalize_name(threat)
+    for threat in top_threats:
+        if normalize_name(threat) == normalize_name(name):
+            continue
 
-            out1 = call_damage_script(poke_a, poke_b)
-            out2 = call_damage_script(poke_b, poke_a)
-            verdict1 = evaluate_duel(out1)
-            verdict2 = evaluate_duel(out2)
+        out1 = call_damage_script(normalize_name(name), normalize_name(threat))
+        summaries = summarize_duel(out1)
 
-            log_file.write(f"🧪 {name.title()} vs {threat.title()}\n")
-            log_file.write(f"{verdict1.upper()} ({name} attacking)\n")
-            log_file.write(out1 + "\n\n")
-            log_file.write(f"{verdict2.upper()} ({threat} attacking)\n")
-            log_file.write(out2 + "\n\n")
-            log_file.write("=" * 60 + "\n\n")
+        wins = sum("max 100.0%" in line or float(line.split("max ")[-1][:-1]) >= 100 for line in summaries if "max" in line)
+        total = sum(1 for line in summaries if "max" in line)
+        winrate = wins / total * 100 if total else 0
+        verdict = "✅ Win" if winrate > 50 else "❌ Loss" if winrate < 50 else "⚖️ Draw"
 
-            win = (verdict1 == "win" or verdict2 == "loss")
-            loss = (verdict1 == "loss" or verdict2 == "win")
-            draw = not win and not loss
+        print(f"🆚 {threat}: {verdict} ({winrate:.0f}% win rate)")
+        summary_log.write(f"{name.title()} vs {threat.title()}\n")
+        summary_log.writelines(line + "\n" for line in summaries)
+        summary_log.write(f"➡️ Résultat: {verdict} ({winrate:.0f}% win rate)\n\n")
 
-            results[threat] = {
-                "win": win,
-                "loss": loss,
-                "draw": draw,
-                "verdicts": (verdict1, verdict2)
-            }
+        results[threat] = {
+            "winrate": winrate,
+            "verdict": verdict,
+            "details": summaries
+        }
 
-            if win:
-                # Parse des noms de sets pour résumé
-                set_matches = re.findall(r"🧪 strategy: (.*?) vs strategy: (.*?)\n", out1 + "\n" + out2)
-                for set1, set2 in set_matches:
-                    win_details.append(f"{set1.strip()} wins against {set2.strip()}")
-
-        # ➕ Ajout du résumé tout en bas du fichier
-        log_file.write("\n📊 Résumé des sets gagnants:\n")
-        if win_details:
-            for line in win_details:
-                log_file.write("✔️ " + line + "\n")
-        else:
-            log_file.write("Aucune victoire nette identifiée via sets.\n")
-
+    summary_log.close()
     return results
-
-
-# Ajouts dans simulate_vs_cores
-
-def simulate_vs_cores(name: str, min_pct: float = 20.0):
-    cores = detect_common_cores(metagame, min_pct=min_pct)
-    results = []
-
-    os.makedirs("data/results", exist_ok=True)
-    result_path = f"data/results/{normalize_name(name)}_vs_cores.txt"
-
-    with open(result_path, "w", encoding="utf-8") as log_file:
-        for core in cores:
-            if not any(normalize_name(name) == normalize_name(p) for p in core):
-                continue
-
-            core_outcome = []
-            losses = []
-            wins = []
-
-            log_file.write(f"🧩 Core: {', '.join(core)}\n")
-
-            for mate in core:
-                if normalize_name(mate) == normalize_name(name):
-                    continue
-
-                attacker = normalize_name(name)
-                defender = normalize_name(mate)
-
-                out1 = call_damage_script(attacker, defender)
-                out2 = call_damage_script(defender, attacker)
-                verdict1 = evaluate_duel(out1)
-                verdict2 = evaluate_duel(out2)
-
-                # Log complet
-                log_file.write(f"\n🧪 {name.title()} vs {mate.title()}\n")
-                log_file.write(f"{verdict1.upper()} ({name} attacking)\n")
-                log_file.write(out1 + "\n\n")
-                log_file.write(f"{verdict2.upper()} ({mate} attacking)\n")
-                log_file.write(out2 + "\n")
-                log_file.write("=" * 60 + "\n\n")
-
-                if verdict1 == "win" or verdict2 == "loss":
-                    outcome = "✅ Win"
-                    wins.append(mate)
-                elif verdict1 == "loss" or verdict2 == "win":
-                    outcome = "❌ Loss"
-                    losses.append(mate)
-                elif verdict1 == "draw" or verdict2 == "draw":
-                    outcome = "⚖️ Draw"
-                else:
-                    outcome = "❓ Unknown"
-
-                core_outcome.append((mate, outcome))
-
-            summary_line = f"Résultat global: {len(wins)}W / {len(losses)}L / {len(core_outcome) - len(wins) - len(losses)}D\n"
-            log_file.write(summary_line)
-
-            results.append({
-                "core": core,
-                "outcome": core_outcome,
-                "wins": wins,
-                "losses": losses
-            })
-
-    return results
-
-
 
 if __name__ == "__main__":
     import sys
@@ -262,30 +113,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     name = sys.argv[1]
-    print(f"📘 Analyse de {name.title()}\n")
+    print(f"\n📘 Analyse de {name.title()}\n")
     info = analyze_pokemon(name)
     pprint.pprint(info, sort_dicts=False)
 
-    print("\n⚔️ Résumé des matchups :\n")
-    matchups = simulate_matchups(name)
-    for foe, data in matchups.items():
-        verdict = "✅ Win" if data["win"] else "❌ Loss" if data["loss"] else "⚖️ Draw"
-        print(f"🆚 {foe}: {verdict} ({data['verdicts'][0]}/{data['verdicts'][1]})")
-
-    print("\n🤝 Matchups contre cores :\n")
-    for entry in simulate_vs_cores(name):
-        core = entry["core"]
-        outcome = entry["outcome"]
-        losses = entry["losses"]
-        wins = entry["wins"]
-
-        print(f"🧩 Core: {', '.join(core)}")
-        for poke, res in outcome:
-            print(f"{poke}: {res}")
-
-        if losses:
-            print(f"   ❌ Pertes contre : {', '.join(losses)}")
-        else:
-            winrate = 100 * len(wins) / len(outcome)
-            print(f"   ✅ Winrate sur le core : {winrate:.0f}%")
-        print()
+    simulate_matchups(name)
