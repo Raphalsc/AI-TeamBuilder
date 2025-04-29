@@ -13,7 +13,7 @@ def load_metagame_data(path: str = DATA_PATH) -> dict:
 # === Fonctions d’accès direct ===
 
 def get_metagame_entry(name: str, data: dict) -> Optional[dict]:
-    return data.get(name)
+    return data.get(name) or data.get(name.lower().replace(" ", "").replace("-", ""))
 
 def get_all_pokemon(data: dict) -> List[str]:
     return list(data.keys())
