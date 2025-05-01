@@ -1,3 +1,4 @@
+// callDamageFromJSON.mjs
 import { Generations, Pokemon, Move, calculate, Field } from '@smogon/calc';
 import fs from 'fs';
 
@@ -20,12 +21,8 @@ function parseSet(pokemonName, rawSet) {
     evLine.replace('EVs: ', '').split('/').forEach(part => {
       const [val, stat] = part.trim().split(' ');
       const statMap = {
-        hp: 'hp',
-        at: 'atk', atk: 'atk',
-        df: 'def', def: 'def',
-        sa: 'spa', spa: 'spa',
-        sd: 'spd', spd: 'spd',
-        sp: 'spe', spe: 'spe'
+        hp: 'hp', atk: 'atk', def: 'def', spa: 'spa', spd: 'spd', spe: 'spe',
+        at: 'atk', df: 'def', sa: 'spa', sd: 'spd', sp: 'spe'
       };
       const key = statMap[stat.toLowerCase()] ?? '';
       evs[key] = parseInt(val);
@@ -38,20 +35,15 @@ function parseSet(pokemonName, rawSet) {
     ivLine.replace('IVs: ', '').split('/').forEach(part => {
       const [val, stat] = part.trim().split(' ');
       const statMap = {
-        hp: 'hp',
-        at: 'atk', atk: 'atk',
-        df: 'def', def: 'def',
-        sa: 'spa', spa: 'spa',
-        sd: 'spd', spd: 'spd',
-        sp: 'spe', spe: 'spe'
-      };      
+        hp: 'hp', atk: 'atk', def: 'def', spa: 'spa', spd: 'spd', spe: 'spe',
+        at: 'atk', df: 'def', sa: 'spa', sd: 'spd', sp: 'spe'
+      };
       const key = statMap[stat.toLowerCase()] ?? '';
       ivs[key] = parseInt(val);
     });
   }
 
-  const teraType = lines.find(l => l.toLowerCase().startsWith('tera type:'))?.split(': ')[1] ?? undefined;
-
+  const teraType = lines.find(l => l.toLowerCase().startsWith('tera type:'))?.split(': ')[1];
   const boosts = {};
   const boostsLine = lines.find(l => l.toLowerCase().startsWith('boosts:'));
   if (boostsLine) {
@@ -61,29 +53,10 @@ function parseSet(pokemonName, rawSet) {
     });
   }
 
-  const status = lines.find(l => l.toLowerCase().startsWith('status:'))?.split(': ')[1] ?? undefined;
-
   return {
     name: pokemonName,
-    item,
-    ability,
-    nature,
-    evs,
-    ivs,
-    moves,
-    teraType,
-    boosts,
-    status
+    item, ability, nature, moves, evs, ivs, teraType, boosts
   };
-}
-
-function getWeatherFromAbility(ability) {
-  const a = ability.toLowerCase();
-  if (a === 'drizzle') return 'Rain';
-  if (a === 'drought') return 'Sun';
-  if (a === 'snow warning') return 'Snow';
-  if (a === 'sand stream') return 'Sand';
-  return undefined;
 }
 
 function buildPokemon(set) {
@@ -94,72 +67,64 @@ function buildPokemon(set) {
     evs: set.evs,
     ivs: set.ivs,
     boosts: set.boosts,
-    teraType: set.teraType,
-    status: set.status
+    teraType: set.teraType
   });
 }
 
-function calculateDamage(attackerSet, defenderSet) {
+function simulateSet(attackerSet, defenderSet) {
   const attacker = buildPokemon(attackerSet);
   const defender = buildPokemon(defenderSet);
-
-  const autoWeather = getWeatherFromAbility(attackerSet.ability) || getWeatherFromAbility(defenderSet.ability);
-
   const field = new Field({
     gameType: 'singles',
-    weather: autoWeather || undefined,
-    terrain: '',
-    isGravity: false,
-    isMagicRoom: false,
-    isWonderRoom: false,
-    attackerSide: {
-      spikes: 1,
-      stealthRock: true
-    },
-    defenderSide: {
-      spikes: 2,
-      stealthRock: true
-    }
+    attackerSide: {},
+    defenderSide: {}
   });
 
-  console.log(`\n🔬 ${attacker.name} (${attacker.item}, ${attacker.ability}, Tera: ${attacker.teraType ?? 'aucun'}) vs ${defender.name} (${defender.item}, ${defender.ability})`);
+  const result = {
+    attacker: {
+      name: attacker.name,
+      item: attacker.item,
+      ability: attacker.ability,
+      speed: attacker.stats.spe,
+      hp: attacker.stats.hp
+    },
+    defender: {
+      name: defender.name,
+      item: defender.item,
+      ability: defender.ability,
+      speed: defender.stats.spe,
+      hp: defender.stats.hp
+    },
+    moves: []
+  };
 
   for (const moveName of attackerSet.moves) {
     try {
       const move = new Move(gen, moveName);
-      const result = calculate(gen, attacker, defender, move, field);
-      const hp = result.defender.stats.hp;
-
-      let percents;
-      if (Array.isArray(result.damage)) {
-        const min = Math.min(...result.damage);
-        const max = Math.max(...result.damage);
-        const minPct = ((min / hp) * 100).toFixed(1);
-        const maxPct = ((max / hp) * 100).toFixed(1);
-        percents = `${minPct}% - ${maxPct}%`;
-      } else {
-        const pct = ((result.damage / hp) * 100).toFixed(1);
-        percents = `${pct}%`;
-      }
-
-      console.log(`⚔️ ${moveName}: ${percents}`);
+      const calc = calculate(gen, attacker, defender, move, field);
+      const damage = Array.isArray(calc.damage) ? calc.damage : [calc.damage];
+      const min = Math.min(...damage);
+      const max = Math.max(...damage);
+      result.moves.push({ name: moveName, min, max });
     } catch (e) {
-      console.warn(`❌ Move invalide: ${moveName}`);
+      result.moves.push({ name: moveName, error: 'invalid move' });
     }
   }
-}
-
-function parseArgs(raw) {
-  const [nameRaw, ...setParts] = raw.split(':');
-  const name = nameRaw.toLowerCase();
-  const setKey = setParts.length ? setParts.join(':').trim() : null;
-  return { name, setKey };
+  return result;
 }
 
 const [rawA, rawB] = process.argv.slice(2);
 if (!rawA || !rawB) {
-  console.error("❌ Utilisation : node callDamageFromJSON.mjs <poke1[:set]> <poke2[:set]>");
+  console.error('❌ Usage: node callDamageFromJSON.mjs <poke1[:set]> <poke2[:set]>');
   process.exit(1);
+}
+
+function parseArgs(raw) {
+  const [nameRaw, ...setParts] = raw.split(':');
+  return {
+    name: nameRaw.toLowerCase(),
+    setKey: setParts.length ? setParts.join(':').trim() : null
+  };
 }
 
 const pkmA = parseArgs(rawA);
@@ -167,38 +132,25 @@ const pkmB = parseArgs(rawB);
 
 const setsA = dex[pkmA.name];
 const setsB = dex[pkmB.name];
-
 if (!setsA || !setsB) {
   console.error(`❌ Pokémon introuvable : ${!setsA ? pkmA.name : pkmB.name}`);
   process.exit(1);
 }
 
-const isValidSet = (key, val) =>
-  typeof val === 'string' && !/^(name|type1|type2|ability1|ability2|hidden ability|format)$/i.test(key);
+const parseSets = (sets, name) => Object.entries(sets)
+  .filter(([k, v]) => typeof v === 'string')
+  .map(([k, raw]) => ({ key: k, set: parseSet(name, raw) }));
 
-const parsedSetsA = Object.entries(setsA)
-  .filter(([k, v]) => isValidSet(k, v))
-  .map(([k, raw]) => ({ key: k, set: parseSet(pkmA.name, raw) }));
+const parsedSetsA = parseSets(setsA, pkmA.name);
+const parsedSetsB = parseSets(setsB, pkmB.name);
 
-const parsedSetsB = Object.entries(setsB)
-  .filter(([k, v]) => isValidSet(k, v))
-  .map(([k, raw]) => ({ key: k, set: parseSet(pkmB.name, raw) }));
-
-if (pkmA.setKey && pkmB.setKey) {
-  const rawSetA = setsA[pkmA.setKey];
-  const rawSetB = setsB[pkmB.setKey];
-  if (!rawSetA || !rawSetB) {
-    console.error(`❌ Set introuvable : ${!rawSetA ? pkmA.setKey : pkmB.setKey}`);
-    process.exit(1);
-  }
-  const parsedA = parseSet(pkmA.name, rawSetA);
-  const parsedB = parseSet(pkmB.name, rawSetB);
-  calculateDamage(parsedA, parsedB);
-} else {
-  for (const { key: kA, set: setA } of parsedSetsA) {
-    for (const { key: kB, set: setB } of parsedSetsB) {
-      console.log(`\n🧪 ${kA} vs ${kB}`);
-      calculateDamage(setA, setB);
-    }
+const results = [];
+for (const { key: keyA, set: setA } of parsedSetsA) {
+  for (const { key: keyB, set: setB } of parsedSetsB) {
+    const r = simulateSet(setA, setB);
+    r.setNames = { a: keyA, b: keyB };
+    results.push(r);
   }
 }
+
+console.log(JSON.stringify(results, null, 2));

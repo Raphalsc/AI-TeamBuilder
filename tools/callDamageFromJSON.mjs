@@ -80,20 +80,43 @@ function simulateSet(attackerSet, defenderSet) {
     defenderSide: {}
   });
 
+  // Injecte les stats de l'objet calculé
+  const attackerStats = {
+    hp: attacker.stats.hp,
+    atk: attacker.stats.atk,
+    def: attacker.stats.def,
+    spa: attacker.stats.spa,
+    spd: attacker.stats.spd,
+    spe: attacker.stats.spe
+  };
+
+  const defenderStats = {
+    hp: defender.stats.hp,
+    atk: defender.stats.atk,
+    def: defender.stats.def,
+    spa: defender.stats.spa,
+    spd: defender.stats.spd,
+    spe: defender.stats.spe
+  };
+
   const result = {
     attacker: {
       name: attacker.name,
       item: attacker.item,
       ability: attacker.ability,
-      speed: attacker.stats.spe,
-      hp: attacker.stats.hp
+      nature: attackerSet.nature,
+      evs: attackerSet.evs,
+      ivs: attackerSet.ivs,
+      stats: attackerStats
     },
     defender: {
       name: defender.name,
       item: defender.item,
       ability: defender.ability,
-      speed: defender.stats.spe,
-      hp: defender.stats.hp
+      nature: defenderSet.nature,
+      evs: defenderSet.evs,
+      ivs: defenderSet.ivs,
+      stats: defenderStats
     },
     moves: []
   };
@@ -112,6 +135,7 @@ function simulateSet(attackerSet, defenderSet) {
   }
   return result;
 }
+
 
 const [rawA, rawB] = process.argv.slice(2);
 if (!rawA || !rawB) {
@@ -137,8 +161,9 @@ if (!setsA || !setsB) {
   process.exit(1);
 }
 
+// On garde uniquement les clés de sets valides (souvent nommées "strategy: ...")
 const parseSets = (sets, name) => Object.entries(sets)
-  .filter(([k, v]) => typeof v === 'string')
+  .filter(([k, v]) => typeof v === 'string' && k.startsWith('strategy:'))
   .map(([k, raw]) => ({ key: k, set: parseSet(name, raw) }));
 
 const parsedSetsA = parseSets(setsA, pkmA.name);
